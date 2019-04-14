@@ -15,3 +15,7 @@ definitions:
           - npm ci
           - npm run build
 ```
+
+Additional options:
+
+- branch: The branch to clone from Git

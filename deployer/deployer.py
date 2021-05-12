@@ -23,14 +23,15 @@ config_file = Path.joinpath(config_path, "deployer.yaml")
 @click.option("-f", "--file", default=config_file, type=click.Path(exists=False, file_okay=True, dir_okay=False,
                                                                    writable=True, readable=True, resolve_path=True),
               help="Config file to use or create")
-@click.option("--prompt", default=False, is_flag=True, help="Ask before running on each configured repository")
+@click.option("-p", "--prompt", default=False, is_flag=True, help="Ask before running on each configured repository")
+@click.option("-u", "--upgrade", default=False, is_flag=True, help="Perform an 'upgrade' on the output directory, removing unnecessary files and directories.")
 @click.option("-v", "--verbose", default=False, is_flag=True)
-def main(create, file, prompt, verbose):
+def main(create, file, prompt, verbose, upgrade):
     if type(file) is str:
         file = Path(file)
     if Path.exists(file):
         with open(str(file), 'r') as cfg:
-            run(yaml.safe_load(cfg), prompt, verbose)
+            run(yaml.safe_load(cfg), prompt, verbose, upgrade)
     elif create:
         config_path.mkdir(parents=True, exist_ok=True)
         with open(str(file), 'w') as cfg:
@@ -40,12 +41,13 @@ def main(create, file, prompt, verbose):
                  "sourceDir": ".",
                  "outDir": "c:\\Users\\mikep\\Desktop\\test",
                  "ignore": [".*/*"],
-                 "noOverwrite": []
+                 "noOverwrite": [],
+                 "noRemove":["venv/*"]
                  }
             ]}, cfg)
 
 
-def run(config: Dict, prompt: bool, verbose=False):
+def run(config: Dict, prompt: bool, verbose=False, upgrade=False):
     for definition in config["definitions"]:
         out_dir = Path(definition["outDir"]).absolute()
         if prompt:
@@ -71,7 +73,6 @@ def run(config: Dict, prompt: bool, verbose=False):
                 path = path[len(str(src_dir)) + 1:]
                 if is_dir and path and path[-1] != "/":
                     path += "/"
-
                 return any(fnmatch(path, pat) for pat in definition.get("ignore", []))
 
             def non_overwriter(path):
@@ -79,7 +80,17 @@ def run(config: Dict, prompt: bool, verbose=False):
                 path = path[len(str(src_dir)) + 1:]
                 return any(fnmatch(path, pat) for pat in definition.get("noOverwrite", []))
 
+            def non_remover(path, is_dir=False):
+                path = str(Path(path).as_posix())
+                if is_dir and path and path[-1] != "/":
+                    path += "/"
+                return any(fnmatch(path, pat) for pat in definition.get("noRemove", []))
+
             cp(str(src_dir), str(out_dir), ignore=ignorer, no_overwrite=non_overwriter, verbose=verbose)
+
+            if upgrade:
+                remove(str(src_dir), str(out_dir), no_remove=non_remover, verbose=verbose)
+
         finally:
             try:
                 if verbose:
@@ -95,6 +106,51 @@ def run(config: Dict, prompt: bool, verbose=False):
             subprocess.Popen(command, cwd=str(out_dir), stdout=sys.stdout, stderr=sys.stderr, shell=True).wait()
         print("=" * 30)
         print()
+
+def remove(src, dest, no_remove, verbose):
+    # First, enumerate source files and directories
+    enum_src_dirs = []
+    enum_src_files = []
+    for src_dir, dirs, files in os.walk(src):
+        for dir in dirs:
+            rel_dir_path = os.path.join(os.path.relpath(src_dir, src), dir)
+            if rel_dir_path[-1] != "\\":
+                rel_dir_path += "\\"
+            if rel_dir_path[0:2] == ".\\":
+                rel_dir_path = rel_dir_path[2:]
+            enum_src_dirs.append(rel_dir_path)
+        for file in files:
+            rel_file_path = os.path.join(os.path.relpath(src_dir, src), file)
+            if rel_file_path[0:2] == ".\\":
+                rel_file_path = rel_file_path[2:]
+            enum_src_files.append(rel_file_path)
+
+    # If file/folder exists at destination, but is not in source, remove it (unless protected by 'noRemove')
+    for dest_dir, dirs, files in os.walk(dest):
+        for dir in dirs:
+            rel_dir_path = os.path.join(os.path.relpath(dest_dir, dest), dir)
+            if rel_dir_path[-1] != "\\":
+                rel_dir_path += "\\"
+            if rel_dir_path[0:2] == ".\\":
+                rel_dir_path = rel_dir_path[2:]
+            if rel_dir_path not in enum_src_dirs:
+                allowed_to_remove = not no_remove(rel_dir_path, is_dir=True)
+                if allowed_to_remove:
+                    full_path = os.path.join(dest, rel_dir_path)
+                    shutil.rmtree(full_path)
+                elif not allowed_to_overwrite and verbose:
+                    print(f"Skipping because not allowed to remove {rel_dir_path}")
+        for file in files:
+            rel_file_path = os.path.join(os.path.relpath(dest_dir, dest), file)
+            if rel_file_path[0:2] == ".\\":
+                rel_file_path = rel_file_path[2:]
+            if rel_file_path not in enum_src_files:
+                allowed_to_remove = not no_remove(rel_file_path)
+                if allowed_to_remove:
+                    full_path = os.path.join(dest, rel_file_path)
+                    os.remove(full_path)
+                elif not allowed_to_overwrite and verbose:
+                    print(f"Skipping because not allowed to remove {rel_file_path}")
 
 
 def cp(src, dest, ignore, no_overwrite, verbose):

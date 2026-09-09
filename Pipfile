@@ -11,4 +11,4 @@ GitPython = "*"
 click = "*"
 
 [requires]
-python_full_version = ">=3.10.0"
+python_full_version = ">=3.7.0"
